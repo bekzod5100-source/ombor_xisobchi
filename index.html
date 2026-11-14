@@ -1,0 +1,314 @@
+<!doctype html>
+<html lang="uz">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1">
+<title>Ombor</title>
+<style>
+:root{--bg:#f4f5f7;--card:#fff;--tx:#1b1f24;--mut:#6b7280;--pri:#2563eb;--ok:#16a34a;--bad:#dc2626;--bd:#e5e7eb}
+@media(prefers-color-scheme:dark){:root{--bg:#111418;--card:#1b2027;--tx:#e8eaed;--mut:#9aa3af;--bd:#2c333d}}
+*{box-sizing:border-box}body{margin:0;font:16px system-ui,sans-serif;background:var(--bg);color:var(--tx);padding-bottom:70px}
+.wrap{max-width:560px;margin:0 auto;padding:14px}
+.card{background:var(--card);border:1px solid var(--bd);border-radius:12px;padding:14px;margin-bottom:12px}
+input,select{width:100%;padding:12px;border:1px solid var(--bd);border-radius:10px;background:var(--bg);color:var(--tx);font-size:16px;margin:4px 0 10px}
+label{font-size:13px;color:var(--mut)}
+button{padding:12px 16px;border:0;border-radius:10px;background:var(--pri);color:#fff;font-size:16px;font-weight:600;cursor:pointer}
+button.sec{background:var(--bd);color:var(--tx)}button.ok{background:var(--ok)}button.bad{background:var(--bad)}
+button.full{width:100%}.row{display:flex;gap:8px}.row>*{flex:1}
+nav{position:fixed;bottom:0;left:0;right:0;display:flex;background:var(--card);border-top:1px solid var(--bd)}
+nav button{flex:1;background:none;color:var(--mut);border-radius:0;padding:12px 2px;font-size:12px}nav button.on{color:var(--pri)}
+.chips{display:flex;flex-wrap:wrap;gap:8px;margin-bottom:10px}.chips button{flex:1 1 28%;padding:11px 6px;font-size:15px}
+.cardno{font-size:24px;font-weight:700;letter-spacing:1px;text-align:center;padding:12px 0;word-break:break-all}
+.qty{display:flex;gap:6px;align-items:center}.qty button{padding:6px 12px}.qty b{min-width:30px;text-align:center}
+.badge{font-size:13px;padding:6px 12px;background:var(--pri);color:#fff;border-radius:99px;display:inline-block}
+.badge.paid{background:var(--ok)}.top{display:flex;justify-content:space-between;align-items:center;margin-bottom:12px}
+.item{display:flex;justify-content:space-between;align-items:center;padding:10px 0;border-bottom:1px solid var(--bd)}.item:last-child{border:0}
+.mut{color:var(--mut);font-size:13px}.big{font-size:22px;font-weight:700}.low{color:var(--bad)}
+#toast{position:fixed;top:12px;left:50%;transform:translateX(-50%);background:#111;color:#fff;padding:10px 16px;border-radius:10px;display:none;z-index:99;max-width:90%}
+#scan{position:fixed;inset:0;background:#000;z-index:50;display:none;flex-direction:column}
+#scan video{flex:1;width:100%;object-fit:cover}#scan .bar{padding:14px;text-align:center;color:#fff}
+.hide{display:none!important}.kpi{display:grid;grid-template-columns:1fr 1fr;gap:10px}
+</style>
+</head>
+<body>
+<div id="toast"></div>
+<div id="scan"><video id="vid" playsinline muted></video><div class="bar"><div id="scanmsg" style="margin-bottom:10px">Shtrix-kodni kameraga ko'rsating</div><button class="bad" onclick="stopScan()">Bekor qilish</button></div></div>
+<div class="wrap" id="app"></div>
+<nav id="nav" class="hide">
+<button data-t="sell" class="on" onclick="tab('sell')">🛒<br>Sotuv</button>
+<button data-t="products" onclick="tab('products')">📦<br>Tovarlar</button>
+<button data-t="debts" onclick="tab('debts')">📒<br>Qarz</button>
+<button data-t="report" onclick="tab('report')">📊<br>Hisobot</button>
+<button data-t="settings" onclick="tab('settings')">⚙️<br>Sozlama</button>
+</nav>
+<script>
+let token=localStorage.getItem('tok')||'',me=null,products=[],cur='sell',phone='',pollT=null;
+let cart=[],payType='naxt',cards={},debtName='',debtPhone='';
+const $=s=>document.querySelector(s),app=$('#app');
+const money=n=>Math.round(n||0).toLocaleString('ru-RU').replace(/,/g,' ');
+const esc=s=>String(s??'').replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+function toast(t){const e=$('#toast');e.textContent=t;e.style.display='block';clearTimeout(e._t);e._t=setTimeout(()=>e.style.display='none',3500)}
+async function api(path,method='GET',body){
+  const r=await fetch(path,{method,headers:{'Content-Type':'application/json',...(token?{Authorization:'Bearer '+token}:{})},body:body?JSON.stringify(body):undefined});
+  const j=await r.json().catch(()=>({}));
+  if(r.status===401){token='';localStorage.removeItem('tok');login();throw j}
+  if(r.status===402){lock();throw j}
+  if(!r.ok){toast(j.error||'Xato');throw j}
+  return j;
+}
+/* ---------- Kirish ---------- */
+async function login(){
+  clearInterval(pollT);$('#nav').classList.add('hide');
+  let cfg;
+  try{cfg=await fetch('/api/config').then(r=>r.json())}catch(e){
+    app.innerHTML=`<div class="card"><h2>⚠️ Server ishlamayapti</h2><p>Bu faylni to'g'ridan-to'g'ri ochib bo'lmaydi. Avval <b>python3 server.py</b> ni ishga tushiring, so'ng brauzerda <b>http://localhost:8000</b> manzilini oching.</p></div>`;return}
+  app.innerHTML=`<div class="card"><h2>📦 Ombor</h2>
+  <p class="mut">Ro'yxatdan o'tgach ${cfg.trial_days} kun bepul.</p>
+  <div id="s1"><label>Telefon raqam</label><input id="ph" type="tel" placeholder="+998 90 123 45 67" value="${esc(phone)}">
+  <button class="full" onclick="sendCode()">Kod yuborish</button>
+  <p class="mut">Birinchi marta bo'lsangiz, avval <a href="https://t.me/${cfg.bot}" target="_blank">@${cfg.bot||'bot'}</a> ga kirib «Raqamni ulashish» tugmasini bosing.</p></div>
+  <div id="s2" class="hide"><label>Telegramga kelgan 6 xonali kod</label><input id="cd" inputmode="numeric" maxlength="6">
+  <div id="nm"><label>Ismingiz yoki do'kon nomi</label><input id="name"></div>
+  <button class="full" onclick="verify()">Kirish</button></div></div>`;
+}
+async function sendCode(){
+  phone=$('#ph').value;
+  try{const r=await api('/api/send_code','POST',{phone});
+    $('#s1').classList.add('hide');$('#s2').classList.remove('hide');$('#nm').classList.toggle('hide',!r.new);toast('Kod Telegramga yuborildi')}catch(e){}
+}
+async function verify(){
+  try{const r=await api('/api/verify','POST',{phone,code:$('#cd').value,name:$('#name').value});
+    token=r.token;localStorage.setItem('tok',token);boot()}catch(e){}
+}
+/* ---------- Boshlash / to'lov ---------- */
+async function boot(){
+  if(!token)return login();
+  try{me=await api('/api/me')}catch(e){return}
+  if(!me.access)return lock();
+  $('#nav').classList.remove('hide');tab(cur);
+}
+function lock(){
+  $('#nav').classList.add('hide');
+  app.innerHTML=`<div class="card"><h2>⏰ Bepul muddat tugadi</h2>
+  <p>Davom etish uchun to'lov qiling. «To'lov so'rash» ni bosing: admin Telegramdagi bot chatiga karta raqamini yuboradi. To'lagandan so'ng admin tasdiqlaydi va ilova avtomatik ochiladi.</p>
+  <button class="full" onclick="payReq()">💳 To'lov so'rash</button>
+  <p class="mut" id="pst"></p><button class="sec full" onclick="logout()">Chiqish</button></div>`;
+  clearInterval(pollT);pollT=setInterval(async()=>{try{const m=await fetch('/api/me',{headers:{Authorization:'Bearer '+token}}).then(r=>r.json());if(m.access){clearInterval(pollT);toast('✅ To\'lov tasdiqlandi');boot()}}catch(e){}},8000);
+}
+async function payReq(){try{await api('/api/pay_request','POST');$('#pst').textContent='So\'rov yuborildi. Telegram botni oching: admin karta raqamini shu yerga yuboradi.'}catch(e){}}
+function logout(){token='';localStorage.removeItem('tok');login()}
+function badge(){const t=me.status==='paid'?'paid':'';const d=Math.floor(me.left_hours/24),h=me.left_hours%24;
+  return `<span class="badge ${t}">${me.status==='paid'?'Obuna':'Sinov'}: ${d} kun ${h} soat</span>`}
+function tab(t){cur=t;document.querySelectorAll('nav button').forEach(b=>b.classList.toggle('on',b.dataset.t===t));
+  ({sell:viewSell,products:viewProducts,scan:viewScan,debts:viewDebts,report:viewReport,settings:viewSettings})[t]()}
+function head(title){return `<div class="top"><h2 style="margin:0">${title}</h2>${badge()}</div>`}
+/* ---------- Tovarlar ---------- */
+async function viewProducts(){
+  products=await api('/api/products');
+  app.innerHTML=head('Tovarlar')+`<div class="row"><input id="q" placeholder="🔍 Nomi yoki shtrix-kod" oninput="renderList()" style="flex:4"><button class="sec" onclick="scanProduct()" style="margin:4px 0 10px">📷</button></div><button class="full" onclick="editProduct()">+ Yangi tovar</button><div class="card" style="margin-top:12px" id="list"></div>
+  <button class="sec full" onclick="inventory()">Inventarizatsiya</button><button class="sec full" style="margin-top:8px" onclick="logout()">Chiqish</button>`;renderList()
+}
+function renderList(){
+  const q=($('#q')?.value||'').toLowerCase();
+  const l=products.filter(p=>!q||p.name.toLowerCase().includes(q)||(p.barcode||'').includes(q));
+  $('#list').innerHTML=l.map(p=>`<div class="item" onclick="openProduct(${p.id})"><div><b>${esc(p.name)}</b><div class="mut">${money(p.price)} so'm ${p.barcode?'· '+esc(p.barcode):''}</div></div>
+  <div class="${p.min_qty>0&&p.qty<=p.min_qty?'low':''}"><b>${+p.qty.toFixed(3)}</b> <span class="mut">${esc(p.unit)}</span></div></div>`).join('')||'<p class="mut">Tovar yo\'q</p>'
+}
+function editProduct(p={},barcode=''){
+  app.innerHTML=head(p.id?'Tahrirlash':'Yangi tovar')+`<div class="card"><label>Shtrix-kod</label><div class="row"><input id="f_barcode" value="${esc(p.barcode||barcode)}" style="flex:3"><button class="sec" onclick="scanInto('f_barcode')" style="margin:4px 0 10px">📷</button></div>
+  <label>Nomi</label><input id="f_name" value="${esc(p.name||'')}">
+  <div class="row"><div><label>Kirim narxi</label><input id="f_cost" type="number" inputmode="decimal" value="${p.cost||''}"></div><div><label>Sotuv narxi</label><input id="f_price" type="number" inputmode="decimal" value="${p.price||''}"></div></div>
+  <div class="row"><div><label>Birlik</label><input id="f_unit" value="${esc(p.unit||'dona')}"></div><div><label>Min. qoldiq (ogohlantirish)</label><input id="f_min" type="number" inputmode="decimal" value="${p.min_qty||''}"></div></div>
+  ${p.id?'':`<label>Boshlang'ich qoldiq</label><input id="f_qty" type="number" inputmode="decimal">`}
+  <button class="full" onclick="saveProduct(${p.id||0})">Saqlash</button>
+  ${p.id?`<button class="bad full" style="margin-top:8px" onclick="delProduct(${p.id})">O'chirish</button>`:''}
+  <button class="sec full" style="margin-top:8px" onclick="tab('products')">Orqaga</button></div>`
+}
+async function saveProduct(id){
+  try{await api('/api/products','POST',{id,barcode:$('#f_barcode').value,name:$('#f_name').value,cost:$('#f_cost').value,price:$('#f_price').value,unit:$('#f_unit').value,min_qty:$('#f_min').value,qty:$('#f_qty')?.value});
+    toast('Saqlandi');tab('products')}catch(e){}
+}
+async function delProduct(id){if(confirm("O'chirilsinmi?")){await api('/api/products/'+id,'DELETE');tab('products')}}
+function openProduct(id){const p=products.find(x=>x.id===id);moveView(p,true)}
+/* ---------- Skaner / kirim-chiqim ---------- */
+function viewScan(){
+  app.innerHTML=head('Skaner')+`<div class="card"><button class="full" onclick="scanProduct()">📷 Kamerani ochish</button>
+  <p class="mut">Yoki shtrix-kodni qo'lda kiriting:</p><div class="row"><input id="mb" inputmode="numeric" style="flex:3"><button class="sec" onclick="findCode($('#mb').value)" style="margin:4px 0 10px">Top</button></div></div>`
+}
+async function scanProduct(){const c=await scanOnce();if(c)findCode(c)}
+async function findCode(c){
+  c=(c||'').trim();if(!c)return;products=await api('/api/products');
+  const p=products.find(x=>x.barcode===c);
+  if(p)moveView(p);else if(confirm(`«${c}» topilmadi. Yangi tovar qo'shilsinmi?`))editProduct({},c);else viewScan()
+}
+function moveView(p,fromList){
+  app.innerHTML=head(esc(p.name))+`<div class="card"><div class="big ${p.min_qty>0&&p.qty<=p.min_qty?'low':''}">${+p.qty.toFixed(3)} ${esc(p.unit)}</div>
+  <div class="mut">Kirim: ${money(p.cost)} · Sotuv: ${money(p.price)} so'm</div><br>
+  <label>Miqdor</label><input id="mq" type="number" inputmode="decimal" value="1">
+  <label>Narx (bo'sh qoldirsangiz standart narx)</label><input id="mp" type="number" inputmode="decimal" placeholder="${p.price}">
+  <div class="row"><button class="ok" onclick="doMove(${p.id},'in')">➕ Kirim</button><button class="bad" onclick="doMove(${p.id},'out')">➖ Chiqim</button></div>
+  <button class="sec full" style="margin-top:8px" onclick="editProduct(products.find(x=>x.id===${p.id}))">✏️ Tahrirlash</button>
+  <button class="sec full" style="margin-top:8px" onclick="tab('${fromList?'products':'scan'}')">Orqaga</button></div>`
+}
+async function doMove(id,type){
+  const price=$('#mp').value;
+  try{const r=await api('/api/move','POST',{product_id:id,type,qty:$('#mq').value,price:price===''?undefined:price});
+    toast(`Bajarildi. Qoldiq: ${r.qty}`);tab(cur==='scan'?'scan':'products')}catch(e){}
+}
+async function inventory(){
+  const items=[];
+  for(const p of products){const v=prompt(`${p.name}: haqiqiy qoldiq (tizimda ${p.qty})`,p.qty);if(v===null)break;if(v!==''&&+v!==p.qty)items.push({id:p.id,qty:+v})}
+  if(items.length){await api('/api/inventory','POST',{items});toast(items.length+' ta tovar yangilandi')}tab('products')
+}
+/* ---------- Sotuv ---------- */
+const PAY={naxt:'💵 Naxt',click:'Click',uzcard:'Uzcard',humo:'Humo',qarz:'📒 Qarz'};
+const fmtCard=n=>String(n||'').replace(/\D/g,'').replace(/(.{4})/g,'$1 ').trim();
+async function viewSell(){
+  products=await api('/api/products');cards=await api('/api/settings');
+  app.innerHTML=head('Sotuv')+`<div class="row"><input id="sq" placeholder="Nomi yoki shtrix-kod" oninput="sellSearch()" onkeydown="if(event.key==='Enter')sellEnter()" style="flex:4" autocomplete="off"><button class="sec" onclick="sellScan()" style="margin:4px 0 10px">📷</button></div>
+  <div id="sres"></div><div class="card" id="cart"></div><div class="card" id="payb"></div>`;
+  renderCart();
+}
+function sellMatches(){
+  const q=($('#sq')?.value||'').trim().toLowerCase();if(!q)return[];
+  return products.filter(p=>p.name.toLowerCase().includes(q)||(p.barcode||'').includes(q)).slice(0,6)
+}
+function sellSearch(){
+  const l=sellMatches();
+  $('#sres').innerHTML=l.length?`<div class="card">${l.map(p=>`<div class="item" onclick="addCart(${p.id})"><div><b>${esc(p.name)}</b><div class="mut">${money(p.price)} so'm ${p.barcode?'· '+esc(p.barcode):''}</div></div><div class="mut">${+p.qty.toFixed(3)} ${esc(p.unit)}</div></div>`).join('')}</div>`:''
+}
+function sellEnter(){
+  const q=$('#sq').value.trim();const ex=products.find(p=>p.barcode===q);
+  if(ex)return addCart(ex.id);
+  const l=sellMatches();if(l.length===1)addCart(l[0].id);else if(!l.length)toast('Tovar topilmadi')
+}
+async function sellScan(){
+  const c=await scanOnce();if(!c)return;
+  const p=products.find(x=>x.barcode===c);
+  if(p)addCart(p.id);else toast('Shtrix-kod topilmadi: '+c)
+}
+function addCart(id){
+  const p=products.find(x=>x.id===id);if(!p)return;
+  const it=cart.find(c=>c.id===id),have=it?it.qty:0;
+  if(have+1>p.qty){toast(`${p.name}: omborda yetarli emas (bor: ${+p.qty.toFixed(3)})`);return}
+  if(it)it.qty++;else cart.push({id,name:p.name,price:p.price,qty:1,max:p.qty,unit:p.unit});
+  $('#sq').value='';$('#sres').innerHTML='';renderCart();
+}
+function cq(i,d){
+  const c=cart[i];const n=c.qty+d;
+  if(n<=0){cart.splice(i,1)}else if(n>c.max){toast(`Omborda faqat ${+c.max.toFixed(3)} ${c.unit} bor`);return}else c.qty=n;
+  renderCart()
+}
+function cqSet(i){
+  const c=cart[i],v=parseFloat(prompt(`${c.name}: miqdor`,c.qty));
+  if(!(v>0))return;if(v>c.max){toast(`Omborda faqat ${+c.max.toFixed(3)} ${c.unit} bor`);return}
+  c.qty=v;renderCart()
+}
+function cpSet(i){
+  const c=cart[i],v=parseFloat(prompt(`${c.name}: sotuv narxi`,c.price));
+  if(!(v>=0))return;c.price=v;renderCart()
+}
+function cartTotal(){return cart.reduce((s,c)=>s+c.price*c.qty,0)}
+function renderCart(){
+  const el=$('#cart');if(!el)return;
+  el.innerHTML=cart.length?cart.map((c,i)=>`<div class="item"><div style="flex:1"><b>${esc(c.name)}</b>
+    <div class="mut" onclick="cpSet(${i})">${money(c.price)} so'm ✏️ · jami ${money(c.price*c.qty)}</div></div>
+    <div class="qty"><button class="sec" onclick="cq(${i},-1)">−</button><b onclick="cqSet(${i})">${+c.qty.toFixed(3)}</b><button class="sec" onclick="cq(${i},1)">+</button></div></div>`).join('')
+    +`<div class="top" style="margin:12px 0 0"><span class="mut">Jami</span><span class="big">${money(cartTotal())} so'm</span></div>`
+    :'<p class="mut" style="margin:0">Savat bo\'sh. Tovarni nomi bilan qidiring yoki 📷 bilan skanerlang.</p>';
+  renderPay();
+}
+function setPay(t){payType=t;renderPay()}
+function renderPay(){
+  const el=$('#payb');if(!el)return;
+  const chips=Object.keys(PAY).map(k=>`<button class="${payType===k?'':'sec'}" onclick="setPay('${k}')">${PAY[k]}</button>`).join('');
+  let det='';
+  if(['click','uzcard','humo'].includes(payType)){
+    const n=cards[payType];
+    det=n?`<div class="mut" style="text-align:center">${PAY[payType]} karta raqami</div><div class="cardno">${fmtCard(n)}</div>
+      <div class="mut" style="text-align:center;margin-bottom:10px">To'lanadigan summa: <b>${money(cartTotal())} so'm</b></div>
+      <button class="sec full" onclick="copyCard('${n}')">📋 Nusxalash</button><div style="height:10px"></div>`
+      :`<p class="mut">${PAY[payType]} karta raqami kiritilmagan. «⚙️ Sozlama» bo'limida kiriting.</p>`;
+  }else if(payType==='qarz'){
+    det=`<label>Qarzdor ismi *</label><input value="${esc(debtName)}" oninput="debtName=this.value" placeholder="Masalan: Akmal aka">
+      <label>Telefon (ixtiyoriy)</label><input value="${esc(debtPhone)}" oninput="debtPhone=this.value" type="tel" placeholder="+998 ...">`;
+  }
+  el.innerHTML=`<b>To'lov turi</b><div class="chips" style="margin-top:8px">${chips}</div>${det}
+    <button class="ok full" onclick="doSale()" ${cart.length?'':'disabled style="opacity:.5"'}>✅ Sotishni yakunlash</button>`;
+}
+function copyCard(n){try{navigator.clipboard.writeText(n);toast('Nusxalandi')}catch(e){toast(fmtCard(n))}}
+async function doSale(){
+  if(!cart.length)return toast('Savat bo\'sh');
+  try{
+    const r=await api('/api/sale','POST',{items:cart.map(c=>({product_id:c.id,qty:c.qty,price:c.price})),pay:payType,customer:debtName,phone:debtPhone});
+    toast(`Sotildi: ${money(r.total)} so'm (${PAY[payType]})`);
+    cart=[];payType='naxt';debtName='';debtPhone='';products=await api('/api/products');renderCart()
+  }catch(e){}
+}
+/* ---------- Qarzlar ---------- */
+async function viewDebts(){
+  const r=await api('/api/debts');
+  app.innerHTML=head('Qarzlar')+`<div class="card"><div class="mut">Jami qarz</div><div class="big">${money(r.total)} so'm</div></div>
+  <div class="card">${r.items.map(x=>`<div class="item"><div><b>${esc(x.customer)}</b><div class="mut">${esc(x.phone||'')} ${new Date(x.ts*1000).toLocaleDateString('ru-RU')}</div></div>
+  <div style="text-align:right"><b class="low">${money(x.rest)}</b><br><button style="padding:6px 10px;font-size:14px;margin-top:4px" onclick="payDebt(${x.id},${x.rest})">To'lov oldim</button></div></div>`).join('')||'<p class="mut" style="margin:0">Qarz yo\'q 👍</p>'}</div>`
+}
+async function payDebt(id,rest){
+  const v=prompt(`Qancha to'ladi? (qoldiq: ${money(rest)} so'm)`,Math.round(rest));
+  if(!v)return;
+  try{const r=await api('/api/debts/pay','POST',{id,amount:v});toast(r.rest>0?`Qoldiq: ${money(r.rest)} so'm`:'Qarz to\'liq yopildi ✅');viewDebts()}catch(e){}
+}
+/* ---------- Sozlamalar ---------- */
+async function viewSettings(){
+  const s=await api('/api/settings');
+  app.innerHTML=head('Sozlamalar')+`<div class="card"><b>Karta raqamlari</b>
+  <p class="mut">Sotuvda to'lov turi (Click, Uzcard, Humo) tanlanganda shu raqam ekranda chiqadi.</p>
+  <label>Click karta raqami</label><input id="st_click" inputmode="numeric" maxlength="23" value="${esc(fmtCard(s.click))}" placeholder="8600 0000 0000 0000">
+  <label>Uzcard karta raqami</label><input id="st_uzcard" inputmode="numeric" maxlength="23" value="${esc(fmtCard(s.uzcard))}" placeholder="8600 0000 0000 0000">
+  <label>Humo karta raqami</label><input id="st_humo" inputmode="numeric" maxlength="23" value="${esc(fmtCard(s.humo))}" placeholder="9860 0000 0000 0000">
+  <button class="full" onclick="saveSettings()">Saqlash</button></div>
+  <button class="sec full" onclick="logout()">Chiqish</button>`
+}
+async function saveSettings(){
+  try{await api('/api/settings','POST',{click:$('#st_click').value,uzcard:$('#st_uzcard').value,humo:$('#st_humo').value});toast('Saqlandi')}catch(e){}
+}
+/* ---------- Hisobot ---------- */
+async function viewReport(){
+  const r=await api('/api/report');
+  const list=(a,f)=>a.length?a.map(f).join(''):'<p class="mut">Yo\'q</p>';
+  app.innerHTML=head('Hisobot')+`<div class="kpi"><div class="card"><div class="mut">Bugungi savdo</div><div class="big">${money(r.today_sales)}</div><div class="mut">Foyda: ${money(r.today_profit)}</div></div>
+  <div class="card"><div class="mut">7 kunlik savdo</div><div class="big">${money(r.week_sales)}</div><div class="mut">Foyda: ${money(r.week_profit)}</div></div></div>
+  <div class="card"><b>💰 Bugungi to'lovlar</b>${list(r.by_pay,x=>`<div class="item"><span>${PAY[x.pay]||x.pay}</span><b>${money(x.s)} so'm</b></div>`)}
+  <div class="item"><span class="mut">Jami qarz (hammasi)</span><b class="${r.debt_total>0?'low':''}">${money(r.debt_total)} so'm</b></div></div>
+  <div class="card"><div class="mut">Ombor qiymati (kirim narxida)</div><div class="big">${money(r.stock_value)} so'm</div><div class="mut">${r.products} ta tovar</div></div>
+  <div class="card"><b>⚠️ Kam qolganlar</b>${list(r.low,x=>`<div class="item"><span>${esc(x.name)}</span><b class="low">${+x.qty.toFixed(3)} ${esc(x.unit)}</b></div>`)}</div>
+  <div class="card"><b>🔥 Eng ko'p sotilgan (30 kun)</b>${list(r.top,x=>`<div class="item"><span>${esc(x.name)}</span><span>${+x.q.toFixed(2)} · foyda ${money(x.pr)}</span></div>`)}</div>
+  <div class="card"><b>🐌 Yotib qolgan (30 kun sotilmagan)</b>${list(r.dead,x=>`<div class="item"><span>${esc(x.name)}</span><span>${+x.qty.toFixed(3)} ${esc(x.unit)}</span></div>`)}</div>`
+}
+/* ---------- Kamera ---------- */
+let stream=null,scanTimer=null,zx=null,scanDone=null;
+function scanOnce(){return new Promise(async res=>{
+  scanDone=res;$('#scan').style.display='flex';const v=$('#vid');
+  try{
+    if(!navigator.mediaDevices?.getUserMedia)throw new Error('https');
+    stream=await navigator.mediaDevices.getUserMedia({video:{facingMode:{ideal:'environment'}},audio:false});
+    v.srcObject=stream;await v.play();
+    if('BarcodeDetector' in window){
+      const det=new BarcodeDetector({formats:['ean_13','ean_8','code_128','code_39','upc_a','upc_e','qr_code']});
+      scanTimer=setInterval(async()=>{try{const b=await det.detect(v);if(b.length)finishScan(b[0].rawValue)}catch(e){}},250);
+    }else{
+      await new Promise((ok,no)=>{const s=document.createElement('script');s.src='https://unpkg.com/@zxing/library@0.21.3/umd/index.min.js';s.onload=ok;s.onerror=no;document.head.appendChild(s)});
+      zx=new ZXing.BrowserMultiFormatReader();zx.decodeFromVideoElement(v,(r)=>{if(r)finishScan(r.getText())});
+    }
+  }catch(e){toast('Kamera ochilmadi. Ruxsat bering yoki HTTPS orqali oching.');finishScan(null)}
+})}
+function finishScan(c){
+  clearInterval(scanTimer);try{zx&&zx.reset()}catch(e){}zx=null;
+  if(stream){stream.getTracks().forEach(t=>t.stop());stream=null}
+  $('#scan').style.display='none';if(scanDone){const f=scanDone;scanDone=null;if(c&&navigator.vibrate)navigator.vibrate(80);f(c)}
+}
+function stopScan(){finishScan(null)}
+async function scanInto(id){const c=await scanOnce();if(c)$('#'+id).value=c}
+boot();
+</script>
+</body>
+</html>
